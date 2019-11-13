@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include <iostream>
 #include <numeric> //std::accumulate
+#include <sstream> // std::ostringstream
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -31,54 +32,134 @@ size_t sum_sizes(std::vector<std::vector<int64_t>> &arrays)
     return nelems;
 }
 
-/* Gather one array on 'root' process  */
-std::pair<std::vector<double>, std::vector<int64_t>>
-gather_array(bool flag, adios2::Variable<double> &v,
-             std::vector<std::vector<double>> &arrays,
-             std::vector<std::vector<int64_t>> &indices, int recordsize,
-             int root)
+std::string printDims(const adios2::Dims &dims)
 {
-    std::vector<double> mydata, alldata;
-    std::vector<int64_t> myindex, allindex;
-    size_t nMyElems = sum_sizes(indices);
+    std::ostringstream oss;
+    oss << "{";
+    size_t n = dims.size();
+    if (n > 0)
+    {
+        oss << dims[0];
+        for (size_t i = 1; i < n; ++i)
+        {
+            oss << ", " << dims[i];
+        }
+    }
+    oss << "}";
+    return oss.str();
+}
 
+/* Serialize all data blocks into a table
+ * This means transposing all elements so that one atom/molecule
+ * is in one row.
+ * nmolecules = # of solvent molecules or solute atoms
+ * nvalues    = # of coordinates per value, 3 for data, 1 for indices
+ * nwa        = # of atoms in solvent molecules, 1 for solute
+ */
+template <class T>
+std::vector<T> make_table(bool flag, adios2::Variable<T> &v,
+                          std::vector<std::vector<T>> &arrays, const int nelems,
+                          const int nvalues, const int nwa)
+{
+    std::vector<T> table;
     if (flag)
     {
-
-        // variables for MPI Gather and Gatherv
-        int iElems = static_cast<int>(nMyElems);
-        int recvCountData[comm_size], recvCountIdx[comm_size];
-        int displData[comm_size], displIdx[comm_size];
-
-        // serialize data on each process
-        mydata.resize(nMyElems * recordsize);
-        myindex.resize(nMyElems);
-        std::cout << "Rank " << rank << " serialize " << v.Name() << ", "
-                  << nMyElems << " indices and " << nMyElems * recordsize
-                  << " data elements" << std::endl;
-        size_t nelems = 0;
-        for (int i = 0; i < indices.size(); ++i)
+        const size_t recordsize = nvalues * nwa;
+        table.resize(nelems * recordsize);
+        size_t currentIdx = 0;
+        for (int i = 0; i < arrays.size(); ++i)
         {
-            std::cout << "-- Rank " << rank << " copy " << indices[i].size()
-                      << " indices to myindex at " << nelems << std::endl;
-            std::cout << "-- Rank " << rank << " copy "
-                      << indices[i].size() * recordsize
-                      << " data to myindex at " << nelems * recordsize
-                      << " arrays[i] size = "
-                      << arrays[i].end() - arrays[i].begin() << std::endl;
-            std::cout << "-- Rank " << rank << " arrays[" << i << "] = [";
+            std::vector<T> &a = arrays[i];
+            const size_t n = a.size() / nvalues / nwa;
+            // pre-calculate the offsets from where we copy pieces of info
+            // for one molecule/atom
+            size_t ns[recordsize];
+            ns[0] = 0;
+            for (int j = 1; j < recordsize; ++j)
+            {
+                ns[j] = ns[j - 1] + n;
+            }
+
+            std::cout << "-- Rank " << rank << " copy " << n
+                      << " elements to var " << v.Name()
+                      << " table nrows = " << nelems
+                      << " recordsize = " << recordsize
+                      << " at index = " << currentIdx << " ns = [";
+            for (int j = 0; j < recordsize; ++j)
+            {
+                std::cout << ns[j] << " ";
+            }
+            std::cout << "]" << std::endl;
+            /*std::cout << "-- Rank " << rank << " arrays[" << i << "] = [";
             for (int j = 0; j < arrays[i].size(); ++j)
             {
                 std::cout << " " << arrays[i][j];
             }
-            std::cout << "] " << std::endl;
+            std::cout << "] " << std::endl;*/
 
-            std::copy(arrays[i].begin(), arrays[i].end(),
-                      mydata.begin() + nelems * recordsize);
-            std::copy(indices[i].begin(), indices[i].end(),
-                      myindex.begin() + nelems);
-            nelems += indices[i].size();
+            for (size_t j = 0; j < n; ++j)
+            {
+                for (size_t k = 0; k < nwa; ++k)
+                {
+                    for (size_t l = 0; l < nvalues; ++l)
+                    {
+                        table[currentIdx] = a[j + ns[k * nvalues + l]];
+                        ++currentIdx;
+                    }
+                }
+            }
         }
+        if (currentIdx != table.size())
+        {
+            std::cout << " ERROR: currentIDX=" << currentIdx
+                      << " should be equal to "
+                      << " table size = " << table.size() << std::endl;
+        }
+    }
+    return table;
+}
+
+bool epsilon(double d) { return (fabs(d) < 1.0e-20); }
+
+/* Gather one array on 'root' process  */
+void dbgCheckZeros(bool flag, adios2::Variable<double> &v,
+                   std::vector<double> &mydata, std::vector<int64_t> &myindex,
+                   int recordsize, int root)
+{
+    if (root == rank)
+    {
+        const size_t nMyElems = myindex.size() * recordsize;
+        assert(mydata.size() == nMyElems);
+        int nZeros = 0;
+        for (int i = 0; i < nMyElems; ++i)
+        {
+            if (epsilon(mydata[i]))
+            {
+                ++nZeros;
+            }
+        }
+        std::cout << "-- Rank " << rank << " var " << v.Name() << " data has "
+                  << nMyElems << " elements and " << nZeros << " zeros"
+                  << std::endl;
+    }
+}
+
+/* Gather one array on 'root' process  */
+std::pair<std::vector<double>, std::vector<int64_t>>
+gather_array(bool flag, adios2::Variable<double> &v,
+             std::vector<double> &mydata, std::vector<int64_t> &myindex,
+             int recordsize, int root)
+{
+    std::vector<double> alldata;
+    std::vector<int64_t> allindex;
+    const size_t nMyElems = myindex.size();
+
+    if (flag)
+    {
+        // variables for MPI Gather and Gatherv
+        int iElems = static_cast<int>(nMyElems);
+        int recvCountData[comm_size], recvCountIdx[comm_size];
+        int displData[comm_size], displIdx[comm_size];
 
         // Gather sizes of all blocks from all processes
         MPI_Gather(&iElems, 1, MPI_INT, &recvCountIdx, 1, MPI_INT, root, comm);
@@ -126,7 +207,9 @@ gather_array(bool flag, adios2::Variable<double> &v,
     return std::make_pair(alldata, allindex);
 }
 
-/* Sort and write on root process */
+/* Sort and write on root process
+ * Here we have a table where each row is one molecule/atom
+ */
 void sort_and_write_array(
     bool flag, adios2::Variable<double> &v, adios2::Engine &writer,
     std::pair<std::vector<double>, std::vector<int64_t>> serializedData,
@@ -139,39 +222,28 @@ void sort_and_write_array(
         std::vector<double> sorted;
 
         const size_t n = indices.size();
-        size_t ns[recordsize];
-        ns[0] = 0;
-        for (int j = 1; j < recordsize; ++j)
-        {
-            ns[j] = ns[j - 1] + n;
-        }
-        sorted.resize(array.size());
-        assert(array.size() == n * recordsize);
+
+        sorted.resize(n * recordsize);
+        assert(sorted.size() == array.size());
 
         std::cout << "Rank " << rank << " sort " << v.Name() << " " << n
-                  << " elements, recordsize = " << recordsize << " ns = [";
-        for (int j = 0; j < recordsize; ++j)
-        {
-            std::cout << ns[j] << " ";
-        }
-        std::cout << "]" << std::endl;
+                  << " elements" << std::endl;
 
 #if 1
         // Note: indices run 1..N fortran style, here we calculate with 0..N-1
         for (size_t i = 0; i < n; ++i)
         {
             size_t idx = (indices[i] - 1);
-            for (size_t j = 0; j < recordsize; ++j)
+            if (idx >= n)
             {
-                if (idx >= n)
-                {
-                    std::cout << "-- Rank " << rank << " indices[" << i
-                              << "] = " << indices[i] - 1 << " idx = " << idx
-                              << " is out of range = " << n << std::endl;
-                }
-                assert(idx < n);
-                sorted[ns[j] + idx] = array[ns[j] + i];
+                std::cout << "-- Rank " << rank << " indices[" << i
+                          << "] = " << indices[i] - 1 << " idx = " << idx
+                          << " is out of range = " << n << std::endl;
             }
+            assert(idx < n);
+            std::copy(array.begin() + i * recordsize,
+                      array.begin() + (i + 1) * recordsize,
+                      sorted.begin() + idx * recordsize);
         }
 #else
         /* Copy as is. No sorting */
@@ -276,7 +348,6 @@ int work(std::string &casename)
     // adios2 variable declarations for the output variables
     adios2::Variable<int64_t> vnwm, vnwa, vnsa;
     adios2::Variable<double> vxw, vvw, vfw, vxs, vvs, vfs;
-    adios2::Variable<int64_t> viw, vis;
     adios2::Variable<std::string> vrdate, vrtime;
     adios2::Variable<double> vstime, vpres, vtemp, vvlat;
 
@@ -353,21 +424,21 @@ int work(std::string &casename)
             size_t snwm = static_cast<size_t>(nwm);
             size_t snwa = static_cast<size_t>(nwa);
             vxw = writer_io.DefineVariable<double>("solvent/coords",
-                                                   {3, snwa, snwm}, {0, 0, 0},
-                                                   {3, snwa, snwm}, false);
+                                                   {snwm, snwa, 3}, {0, 0, 0},
+                                                   {snwm, snwa, 3}, false);
             vvw = writer_io.DefineVariable<double>("solvent/velocity",
-                                                   {3, snwa, snwm}, {0, 0, 0},
-                                                   {3, snwa, snwm});
+                                                   {snwm, snwa, 3}, {0, 0, 0},
+                                                   {snwm, snwa, 3});
             vfw = writer_io.DefineVariable<double>(
-                "solvent/forces", {3, snwa, snwm}, {0, 0, 0}, {3, snwa, snwm});
+                "solvent/forces", {snwm, snwa, 3}, {0, 0, 0}, {snwm, snwa, 3});
 
             size_t snsa = static_cast<size_t>(nsa);
-            vxs = writer_io.DefineVariable<double>("solute/coords", {3, snsa},
-                                                   {0, 0}, {3, snsa});
-            vvs = writer_io.DefineVariable<double>("solute/velocity", {3, snsa},
-                                                   {0, 0}, {3, snsa});
-            vfs = writer_io.DefineVariable<double>("solute/forces", {3, snsa},
-                                                   {0, 0}, {3, snsa});
+            vxs = writer_io.DefineVariable<double>("solute/coords", {snsa, 3},
+                                                   {0, 0}, {snsa, 3});
+            vvs = writer_io.DefineVariable<double>("solute/velocity", {snsa, 3},
+                                                   {0, 0}, {snsa, 3});
+            vfs = writer_io.DefineVariable<double>("solute/forces", {snsa, 3},
+                                                   {0, 0}, {snsa, 3});
 
             if (!rank)
             {
@@ -412,8 +483,6 @@ int work(std::string &casename)
             xs.resize(nblocks);
             vs.resize(nblocks);
             fs.resize(nblocks);
-
-            firstStep = false;
         }
 
         // process flags
@@ -458,39 +527,51 @@ int work(std::string &casename)
             std::cout << "Rank " << rank << " block " << i << " select ID "
                       << startBlockID + i << std::endl;
             in_viw.SetBlockSelection(startBlockID + i);
-            reader.Get<int64_t>("solvent/indices", iw[i]);
+            reader.Get<int64_t>(in_viw, iw[i]);
             if (lxw)
             {
                 in_vxw.SetBlockSelection(startBlockID + i);
+                size_t n = 1;
+                for (const auto &d : in_vxw.Count())
+                {
+                    n *= d;
+                }
+                xw[i].resize(n);
                 reader.Get<double>("solvent/coords", xw[i]);
+                std::cout << "Rank " << rank << " block " << i
+                          << " solvent/coords size = " << n
+                          << " shape = " << printDims(in_vxw.Shape())
+                          << " dims = " << printDims(in_vxw.Count())
+                          << " offset = " << printDims(in_vxw.Start())
+                          << std::endl;
             }
             if (lvw)
             {
                 in_vvw.SetBlockSelection(startBlockID + i);
-                reader.Get<double>("solvent/velocity", vw[i]);
+                reader.Get<double>(in_vvw, vw[i]);
             }
             if (lfw)
             {
                 in_vfw.SetBlockSelection(startBlockID + i);
-                reader.Get<double>("solvent/forces", fw[i]);
+                reader.Get<double>(in_vfw, fw[i]);
             }
 
             in_vis.SetBlockSelection(startBlockID + i);
-            reader.Get<int64_t>("solute/indices", is[i]);
+            reader.Get<int64_t>(in_vis, is[i]);
             if (lxs)
             {
                 in_vxs.SetBlockSelection(startBlockID + i);
-                reader.Get<double>("solute/coords", xs[i]);
+                reader.Get<double>(in_vxs, xs[i]);
             }
             if (lvs)
             {
                 in_vvs.SetBlockSelection(startBlockID + i);
-                reader.Get<double>("solute/velocity", vs[i]);
+                reader.Get<double>(in_vvs, vs[i]);
             }
             if (lfs)
             {
                 in_vfs.SetBlockSelection(startBlockID + i);
-                reader.Get<double>("solute/forces", fs[i]);
+                reader.Get<double>(in_vfs, fs[i]);
             }
         }
 
@@ -507,6 +588,7 @@ int work(std::string &casename)
             reader.Get<double>("stime", stime);
             reader.Get<double>("pres", pres);
             reader.Get<double>("temp", temp);
+            reader.Get<double>("vlat", vlat);
         }
 
         // End adios2 step for reading
@@ -516,7 +598,10 @@ int work(std::string &casename)
         for (size_t i = 0; i < nblocks; ++i)
         {
             if (lxw)
+            {
                 assert(xw[i].size() == iw[i].size() * 3 * nwa);
+                dbgCheckZeros(lxw, vxw, xw[i], iw[i], 3 * nwa, rank);
+            }
             if (lvw)
                 assert(vw[i].size() == iw[i].size() * 3 * nwa);
             if (lfw)
@@ -537,22 +622,54 @@ int work(std::string &casename)
                       << " compute step " << stime << std::endl;
         }
 
+        // Serialize blocks into one 2D array where
+        // all data per particle is in one record ('t' is for 'table')
+        size_t nSolventMoleculesLocal = sum_sizes(iw);
+
+        std::vector<int64_t> tiw =
+            make_table(true, in_viw, iw, nSolventMoleculesLocal, 1, 1);
+        std::vector<double> txw =
+            make_table(lxw, vxw, xw, nSolventMoleculesLocal, 3, nwa);
+        std::vector<double> tvw =
+            make_table(lvw, vvw, vw, nSolventMoleculesLocal, 3, nwa);
+        std::vector<double> tfw =
+            make_table(lfw, vfw, fw, nSolventMoleculesLocal, 3, nwa);
+
+        size_t nSoluteAtomsLocal = sum_sizes(is);
+
+        std::vector<int64_t> tis =
+            make_table(true, in_vis, is, nSoluteAtomsLocal, 1, 1);
+        std::vector<double> txs =
+            make_table(lxs, vxs, xs, nSoluteAtomsLocal, 3, 1);
+        std::vector<double> tvs =
+            make_table(lvs, vvs, vs, nSoluteAtomsLocal, 3, 1);
+        std::vector<double> tfs =
+            make_table(lfs, vfs, fs, nSoluteAtomsLocal, 3, 1);
+
+        dbgCheckZeros(lxw, vxw, txw, tiw, 3 * nwa, rank);
+        dbgCheckZeros(lxs, vxs, txs, tis, 3, rank);
+
         // Collect each array on various ranks and sort there
         std::pair<std::vector<double>, std::vector<int64_t>> gxwi =
-            gather_array(lxw, vxw, xw, iw, nwa * 3, 0);
+            gather_array(lxw, vxw, txw, tiw, nwa * 3, 0);
         std::pair<std::vector<double>, std::vector<int64_t>> gvwi =
-            gather_array(lvw, vvw, vw, iw, nwa * 3, 0);
+            gather_array(lvw, vvw, tvw, tiw, nwa * 3, 0);
         std::pair<std::vector<double>, std::vector<int64_t>> gfwi =
-            gather_array(lfw, vfw, fw, iw, nwa * 3, 0);
+            gather_array(lfw, vfw, tfw, tiw, nwa * 3, 0);
         std::pair<std::vector<double>, std::vector<int64_t>> gxsi =
-            gather_array(lxs, vxs, xs, is, 3, 0);
+            gather_array(lxs, vxs, txs, tis, 3, 0);
         std::pair<std::vector<double>, std::vector<int64_t>> gvsi =
-            gather_array(lvs, vvs, vs, is, 3, 0);
+            gather_array(lvs, vvs, tvs, tis, 3, 0);
         std::pair<std::vector<double>, std::vector<int64_t>> gfsi =
-            gather_array(lfs, vfs, fs, is, 3, 0);
+            gather_array(lfs, vfs, tfs, tis, 3, 0);
 
         // Sort particles
         // Write out result
+
+        if (!rank)
+        {
+            writer.BeginStep();
+        }
 
         sort_and_write_array(lxw, vxw, writer, gxwi, nwa * 3, 0);
         sort_and_write_array(lvw, vvw, writer, gvwi, nwa * 3, 0);
@@ -563,11 +680,22 @@ int work(std::string &casename)
 
         if (!rank)
         {
-            writer.BeginStep();
+            if (firstStep)
+            {
+                writer.Put<int64_t>(vnwm, nwm);
+                writer.Put<int64_t>(vnwa, nwa);
+                writer.Put<int64_t>(vnsa, nsa);
+                writer.Put<std::string>(vrdate, rdate);
+            }
             writer.Put<double>(vstime, stime);
+            writer.Put<double>(vpres, pres);
+            writer.Put<double>(vtemp, temp);
+            writer.Put<std::string>(vrtime, rtime);
+            writer.Put<double>(vvlat, vlat.data());
             writer.EndStep();
         }
         ++stepSorting;
+        firstStep = false;
     }
 
     // cleanup
