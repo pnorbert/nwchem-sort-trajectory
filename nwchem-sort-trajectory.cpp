@@ -356,10 +356,11 @@ int work(std::string &casename)
 
     // IO objects for reading and writing
     adios2::IO reader_io = ad.DeclareIO("trj");
-    adios2::IO writer_io;
+    // We use the IO and Variable definitions on all processes but only
+    // rank 0 will use it for writing output
+    adios2::IO writer_io = ad.DeclareIO("SortingOutput");
     if (!rank)
     {
-        writer_io = ad.DeclareIO("SortingOutput");
         std::cout << "Sorter reads " << in_filename
                   << " using engine type: " << reader_io.EngineType()
                   << std::endl;
