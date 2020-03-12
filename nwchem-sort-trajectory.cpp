@@ -486,9 +486,9 @@ int work(std::string &casename)
         }
 
         // process flags
-        adios2::Variable<char> in_vflags =
-            reader_io.InquireVariable<char>("flags");
-        flags = in_vflags.Min();
+        adios2::Variable<int8_t> in_vflags =
+            reader_io.InquireVariable<int8_t>("flags");
+        flags = static_cast<char>(in_vflags.Min());
         bool lfs = (flags % 2 == 1);
         flags = flags >> 1;
         bool lvs = (flags % 2 == 1);
