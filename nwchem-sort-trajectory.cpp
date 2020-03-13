@@ -336,7 +336,8 @@ int work(std::string &casename)
     std::vector<double> oxs, ovs, ofs;
 
     // Number of blocks to read on this process
-    size_t nblocks, startBlockID;
+    size_t nblocks_solvent, startBlockID_solvent;
+    size_t nblocks_solute, startBlockID_solute;
 
     bool firstStep = true;
 
@@ -457,34 +458,80 @@ int work(std::string &casename)
                 vvlat = writer_io.DefineVariable<double>("vlat", {3, 3}, {0, 0},
                                                          {3, 3});
             }
+        }
 
-            // How many blocks to read on this process?
-            nblocks = static_cast<size_t>(nwriters / comm_size);
-            size_t extras = static_cast<size_t>(nwriters % comm_size);
-            startBlockID = rank * nblocks;
+        // How many blocks to read on this process?
+        size_t total_solvent_blocks;
+        size_t total_solute_blocks;
+        {
+            // Total number of solvent blocks in this step
+            in_viw = reader_io.InquireVariable<int64_t>("solvent/indices");
+            auto blocks = reader.BlocksInfo(in_viw, reader.CurrentStep());
+            total_solvent_blocks = blocks.size();
+            std::cout << "   ****  Solvent blocks = " << total_solvent_blocks
+                      << "   ****" << std::endl;
+        }
+        {
+            // Total number of solute blocks in this step
+            in_vis = reader_io.InquireVariable<int64_t>("solute/indices");
+            auto blocks = reader.BlocksInfo(in_vis, reader.CurrentStep());
+            total_solute_blocks = blocks.size();
+            std::cout << "   ****  Solute blocks = " << total_solute_blocks
+                      << "   ****" << std::endl;
+        }
+
+        {
+            // Number of solvent blocks to read by this process in this step
+            nblocks_solvent =
+                static_cast<size_t>(total_solvent_blocks / comm_size);
+            size_t extras =
+                static_cast<size_t>(total_solvent_blocks % comm_size);
+            startBlockID_solvent = rank * nblocks_solvent;
             if (rank < extras)
             {
-                ++nblocks;
-                startBlockID += rank;
+                ++nblocks_solvent;
+                startBlockID_solvent += rank;
             }
             else
             {
-                startBlockID += extras;
+                startBlockID_solvent += extras;
             }
-
-            std::cout << "Rank " << rank << " reads " << nblocks
-                      << " blocks from idx " << startBlockID << " from total "
-                      << nwriters << " blocks" << std::endl;
-
-            iw.resize(nblocks);
-            xw.resize(nblocks);
-            vw.resize(nblocks);
-            fw.resize(nblocks);
-            is.resize(nblocks);
-            xs.resize(nblocks);
-            vs.resize(nblocks);
-            fs.resize(nblocks);
         }
+
+        {
+            // Number of solute blocks to read by this process in this step
+            nblocks_solute =
+                static_cast<size_t>(total_solute_blocks / comm_size);
+            size_t extras =
+                static_cast<size_t>(total_solute_blocks % comm_size);
+            startBlockID_solute = rank * nblocks_solute;
+            if (rank < extras)
+            {
+                ++nblocks_solute;
+                startBlockID_solute += rank;
+            }
+            else
+            {
+                startBlockID_solute += extras;
+            }
+        }
+
+        std::cout << "Rank " << rank << " reads " << nblocks_solvent
+                  << "  blocks from idx " << startBlockID_solvent
+                  << " from total " << total_solvent_blocks
+                  << " Solvent blocks, and reads " << nblocks_solute
+                  << "  blocks from idx " << startBlockID_solute
+                  << " from total " << total_solute_blocks << " Solute blocks"
+                  << std::endl;
+
+        iw.resize(nblocks_solvent);
+        xw.resize(nblocks_solvent);
+        vw.resize(nblocks_solvent);
+        fw.resize(nblocks_solvent);
+        is.resize(nblocks_solute);
+        xs.resize(nblocks_solute);
+        vs.resize(nblocks_solute);
+        fs.resize(nblocks_solute);
 
         // process flags
         adios2::Variable<int8_t> in_vflags =
@@ -506,7 +553,6 @@ int work(std::string &casename)
                   << lvs << lfs << std::endl;
 
         // Read trajectory data and indices
-        in_viw = reader_io.InquireVariable<int64_t>("solvent/indices");
         if (lxw)
             in_vxw = reader_io.InquireVariable<double>("solvent/coords");
         if (lvw)
@@ -514,7 +560,6 @@ int work(std::string &casename)
         if (lfw)
             in_vfw = reader_io.InquireVariable<double>("solvent/forces");
 
-        in_vis = reader_io.InquireVariable<int64_t>("solute/indices");
         if (lxs)
             in_vxs = reader_io.InquireVariable<double>("solute/coords");
         if (lvs)
@@ -522,16 +567,15 @@ int work(std::string &casename)
         if (lfs)
             in_vfs = reader_io.InquireVariable<double>("solute/forces");
 
-        for (size_t i = 0; i < nblocks; ++i)
+        for (size_t i = 0; i < nblocks_solvent; ++i)
         {
-
-            std::cout << "Rank " << rank << " block " << i << " select ID "
-                      << startBlockID + i << std::endl;
-            in_viw.SetBlockSelection(startBlockID + i);
+            std::cout << "Rank " << rank << " solvent block " << i
+                      << " select ID " << startBlockID_solvent + i << std::endl;
+            in_viw.SetBlockSelection(startBlockID_solvent + i);
             reader.Get<int64_t>(in_viw, iw[i]);
             if (lxw)
             {
-                in_vxw.SetBlockSelection(startBlockID + i);
+                in_vxw.SetBlockSelection(startBlockID_solvent + i);
                 size_t n = 1;
                 for (const auto &d : in_vxw.Count())
                 {
@@ -548,30 +592,35 @@ int work(std::string &casename)
             }
             if (lvw)
             {
-                in_vvw.SetBlockSelection(startBlockID + i);
+                in_vvw.SetBlockSelection(startBlockID_solvent + i);
                 reader.Get<double>(in_vvw, vw[i]);
             }
             if (lfw)
             {
-                in_vfw.SetBlockSelection(startBlockID + i);
+                in_vfw.SetBlockSelection(startBlockID_solvent + i);
                 reader.Get<double>(in_vfw, fw[i]);
             }
+        }
 
-            in_vis.SetBlockSelection(startBlockID + i);
+        for (size_t i = 0; i < nblocks_solute; ++i)
+        {
+            std::cout << "Rank " << rank << " solute block " << i
+                      << " select ID " << startBlockID_solvent + i << std::endl;
+            in_vis.SetBlockSelection(startBlockID_solute + i);
             reader.Get<int64_t>(in_vis, is[i]);
             if (lxs)
             {
-                in_vxs.SetBlockSelection(startBlockID + i);
+                in_vxs.SetBlockSelection(startBlockID_solute + i);
                 reader.Get<double>(in_vxs, xs[i]);
             }
             if (lvs)
             {
-                in_vvs.SetBlockSelection(startBlockID + i);
+                in_vvs.SetBlockSelection(startBlockID_solute + i);
                 reader.Get<double>(in_vvs, vs[i]);
             }
             if (lfs)
             {
-                in_vfs.SetBlockSelection(startBlockID + i);
+                in_vfs.SetBlockSelection(startBlockID_solute + i);
                 reader.Get<double>(in_vfs, fs[i]);
             }
         }
@@ -596,7 +645,7 @@ int work(std::string &casename)
         reader.EndStep();
 
         // NOTE: Input data is in memory at this point but not before
-        for (size_t i = 0; i < nblocks; ++i)
+        for (size_t i = 0; i < nblocks_solvent; ++i)
         {
             if (lxw)
             {
@@ -607,6 +656,9 @@ int work(std::string &casename)
                 assert(vw[i].size() == iw[i].size() * 3 * nwa);
             if (lfw)
                 assert(fw[i].size() == iw[i].size() * 3 * nwa);
+        }
+        for (size_t i = 0; i < nblocks_solute; ++i)
+        {
             if (lxs)
                 assert(xs[i].size() == is[i].size() * 3);
             if (lvs)
