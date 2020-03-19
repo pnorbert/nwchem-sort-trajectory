@@ -25,4 +25,8 @@ add_executable(nwchem-sort-trajectory
 )
 target_link_libraries(nwchem-sort-trajectory adios2::adios2 MPI::MPI_C)
 
+add_executable(testStream
+  testStream.cpp
+)
+target_link_libraries(testStream adios2::adios2 MPI::MPI_C)
 
