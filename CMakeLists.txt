@@ -20,13 +20,18 @@ endif()
 # We are not using the C++ API of MPI, this will stop the compiler look for it
 add_definitions(-DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX)
 
-add_executable(nwchem-sort-trajectory
-  nwchem-sort-trajectory.cpp
+add_executable(nwchem-sort-trajectory-local
+  nwchem-sort-trajectory-local.cpp
 )
-target_link_libraries(nwchem-sort-trajectory adios2::adios2 MPI::MPI_C)
+target_link_libraries(nwchem-sort-trajectory-local adios2::adios2 MPI::MPI_C)
 
-add_executable(testStream
-  testStream.cpp
+add_executable(nwchem-sort-trajectory-global
+  nwchem-sort-trajectory-global.cpp
 )
-target_link_libraries(testStream adios2::adios2 MPI::MPI_C)
+target_link_libraries(nwchem-sort-trajectory-global adios2::adios2 MPI::MPI_C)
+
+add_executable(nwchem-dump-streamer-local
+  nwchem-dump-streamer-local.cpp
+)
+target_link_libraries(nwchem-dump-streamer-local adios2::adios2 MPI::MPI_C)
 
