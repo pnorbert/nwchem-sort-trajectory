@@ -50,44 +50,56 @@ std::string printDims(const adios2::Dims &dims)
 /* Serialize all data blocks into a table
  * This means transposing all elements so that one atom/molecule
  * is in one row.
- * nmolecules = # of solvent molecules or solute atoms
+ * array is an (nblocks * nwa * nvalues * blocksize) sized array where
+ * there is real data and garbage mixed. array consists of 'nblocks' number
+ * of blocks of equal size (blocksize rows) with the ith block:
+ * nelemsPerBlock[i] real data (for one nvalue/nwa) plus
+ * (blocksize-nelemsPerBlock[i]) garbage (usually 0 but not all of them)
+ * this pattern repeats for nwa*nvalues times.
+ * nelemsTotal = # of solvent molecules or solute atoms in the array
  * nvalues    = # of coordinates per value, 3 for data, 1 for indices
  * nwa        = # of atoms in solvent molecules, 1 for solute
  */
 template <class T>
 std::vector<T> make_table(bool flag, adios2::Variable<T> &v,
-                          std::vector<std::vector<T>> &arrays, const int nelems,
+                          std::vector<T> &array, const int nblocks,
+						  const int blocksize, const size_t nelemsTotal,
+						  std::vector<int64_t> nelemsPerBlock,
                           const int nvalues, const int nwa)
 {
     std::vector<T> table;
     if (flag)
     {
-        const size_t recordsize = nvalues * nwa;
-        table.resize(nelems * recordsize);
-        size_t currentIdx = 0;
-        for (int i = 0; i < arrays.size(); ++i)
-        {
-            std::vector<T> &a = arrays[i];
-            const size_t n = a.size() / nvalues / nwa;
-            // pre-calculate the offsets from where we copy pieces of info
-            // for one molecule/atom
-            size_t ns[recordsize];
-            ns[0] = 0;
-            for (int j = 1; j < recordsize; ++j)
-            {
-                ns[j] = ns[j - 1] + n;
-            }
+    	assert(nelemsPerBlock.size() == nblocks);
+    	assert(array.size() == nwa*nvalues*nblocks*blocksize);
+    	const size_t recordsize = nvalues * nwa;
+        table.resize(nelemsTotal * recordsize);
 
-            std::cout << "-- Rank " << rank << " copy " << n
-                      << " elements to var " << v.Name()
-                      << " table nrows = " << nelems
-                      << " recordsize = " << recordsize
-                      << " at index = " << currentIdx << " ns = [";
-            for (int j = 0; j < recordsize; ++j)
-            {
-                std::cout << ns[j] << " ";
-            }
-            std::cout << "]" << std::endl;
+        // pre-calculate the offsets from where we copy pieces of info
+        // for one molecule/atom
+        size_t ns[recordsize];
+        ns[0] = 0;
+        for (int j = 1; j < recordsize; ++j)
+        {
+            ns[j] = j*blocksize;
+        }
+
+        std::cout << "-- Rank " << rank << " copy " << nblocks
+                  << " blocks to var " << v.Name()
+                  << " table nrows = " << nelemsTotal
+                  << " recordsize = " << recordsize
+                 << " ns = [";
+        for (int j = 0; j < recordsize; ++j)
+        {
+            std::cout << ns[j] << " ";
+        }
+        std::cout << "]" << std::endl;
+
+        size_t arrayStartPos = 0;
+        size_t currentIdx = 0;
+        for (int i = 0; i < nblocks; ++i)
+        {
+
             /*std::cout << "-- Rank " << rank << " arrays[" << i << "] = [";
             for (int j = 0; j < arrays[i].size(); ++j)
             {
@@ -95,17 +107,18 @@ std::vector<T> make_table(bool flag, adios2::Variable<T> &v,
             }
             std::cout << "] " << std::endl;*/
 
-            for (size_t j = 0; j < n; ++j)
+            for (size_t j = 0; j < nelemsPerBlock[i]; ++j)
             {
                 for (size_t k = 0; k < nwa; ++k)
                 {
                     for (size_t l = 0; l < nvalues; ++l)
                     {
-                        table[currentIdx] = a[j + ns[k * nvalues + l]];
+                        table[currentIdx] = array[arrayStartPos + j + ns[k * nvalues + l]];
                         ++currentIdx;
                     }
                 }
             }
+            arrayStartPos += blocksize * recordsize;
         }
         if (currentIdx != table.size())
         {
@@ -354,9 +367,7 @@ int work(std::string &casename)
 
     // Number of blocks to read on this process
     size_t nblocks, startBlockID;
-    // sizes and offsets in array to read in
-    size_t startw, countw;
-    size_t starts, counts;
+
 
     bool firstStep = true;
 
@@ -501,29 +512,22 @@ int work(std::string &casename)
             	startBlockID += extras;
             }
 
-            // Pre-calculate offsets and sizes to read from global arrays
-            startw = startBlockID * mwm;
-            countw = nblocks * mwm;
-            starts = startBlockID * msa;
-            counts = nblocks * msa;
-
 
             std::cout << "Rank " << rank << " reads " << nblocks
-            		<< "  blocks from idx " << startBlockID
+            		<< " blocks from block idx " << startBlockID
 					<< " from total " << nwriters
-					<< " Reads " << countw
-					<< "  solvent elements from offset " << startw
-					<< " and reads " << counts << "solute elements from offset " << starts
-					<< std::endl;
+					<< " writers. Reads " << nblocks*mwm
+					<< " solvent records and reads " << nblocks*msa
+					<< " solute records " << std::endl;
 
             iw.resize(nblocks*mwm);
-            xw.resize(nwa*3*nblocks*mwm);
-            vw.resize(nwa*3*nblocks*mwm);
-            fw.resize(nwa*3*nblocks*mwm);
+            xw.resize(nblocks*nwa*3*mwm);
+            vw.resize(nblocks*nwa*3*mwm);
+            fw.resize(nblocks*nwa*3*mwm);
             is.resize(nblocks*msa);
-            xs.resize(3*nblocks*msa);
-            vs.resize(3*nblocks*msa);
-            fs.resize(3*nblocks*msa);
+            xs.resize(nblocks*3*msa);
+            vs.resize(nblocks*3*msa);
+            fs.resize(nblocks*3*msa);
             nwmn.resize(nblocks);
             nsan.resize(nblocks);
 
@@ -551,6 +555,7 @@ int work(std::string &casename)
 
 
         // Read trajectory data and indices
+        in_viw = reader_io.InquireVariable<int64_t>("solvent/indices");
         if (lxw)
             in_vxw = reader_io.InquireVariable<double>("solvent/coords");
         if (lvw)
@@ -558,6 +563,7 @@ int work(std::string &casename)
         if (lfw)
             in_vfw = reader_io.InquireVariable<double>("solvent/forces");
 
+        in_vis = reader_io.InquireVariable<int64_t>("solute/indices");
         if (lxs)
             in_vxs = reader_io.InquireVariable<double>("solute/coords");
         if (lvs)
@@ -565,12 +571,13 @@ int work(std::string &casename)
         if (lfs)
             in_vfs = reader_io.InquireVariable<double>("solute/forces");
 
-        size_t snwa = static_cast<size_t>(nwa);
+        const size_t snwa = static_cast<size_t>(nwa);
+        const size_t smwm = static_cast<size_t>(mwm);
 
         /* Read solvent data, 'nblocks' complete consecutive blocks (from nblocks writers) */
         std::cout << "Rank " << rank << " reads solvent blocks " << startBlockID
         		<< ".." << startBlockID+nblocks-1 << std::endl;
-        in_viw.SetSelection({{startw},{countw}});
+        in_viw.SetSelection({{startBlockID,0},{nblocks,smwm}});
         reader.Get<int64_t>(in_viw, iw);
         std::cout << "Rank " << rank
         		<< " reads solvent/indices"
@@ -580,7 +587,7 @@ int work(std::string &casename)
 				<< std::endl;
         if (lxw)
         {
-        	in_vxw.SetSelection({{0,0,startw},{snwa,3,countw}});
+        	in_vxw.SetSelection({{startBlockID,0,0,0},{nblocks,snwa,3,smwm}});
         	reader.Get<double>("solvent/coords", xw);
         	std::cout << "Rank " << rank
         			<< " reads solvent/coords "
@@ -591,32 +598,34 @@ int work(std::string &casename)
         }
         if (lvw)
         {
-        	in_vvw.SetSelection({{0,0,startw},{snwa,3,countw}});
+        	in_vvw.SetSelection({{startBlockID,0,0,0},{nblocks,snwa,3,smwm}});
         	reader.Get<double>(in_vvw, vw);
         }
         if (lfw)
         {
-        	in_vfw.SetSelection({{0,0,startw},{snwa,3,countw}});
+        	in_vfw.SetSelection({{startBlockID,0,0,0},{nblocks,snwa,3,smwm}});
         	reader.Get<double>(in_vfw, fw);
         }
 
+        const size_t smsa = static_cast<size_t>(msa);
+
         std::cout << "Rank " << rank << " reads solute blocks " << startBlockID
         		<< ".." << startBlockID+nblocks-1 << std::endl;
-        in_vis.SetSelection({{starts},{counts}});
+        in_vis.SetSelection({{startBlockID,0},{nblocks,smsa}});
         reader.Get<int64_t>(in_vis, is);
         if (lxs)
         {
-        	in_vxs.SetSelection({{0,0,starts},{3,counts}});
+        	in_vxs.SetSelection({{startBlockID,0,0},{nblocks,3,smsa}});
         	reader.Get<double>(in_vxs, xs);
         }
         if (lvs)
         {
-        	in_vvs.SetSelection({{0,0,starts},{3,counts}});
+        	in_vvs.SetSelection({{startBlockID,0,0},{nblocks,3,smsa}});
         	reader.Get<double>(in_vvs, vs);
         }
         if (lfs)
         {
-        	in_vfs.SetSelection({{0,0,starts},{3,counts}});
+        	in_vfs.SetSelection({{startBlockID,0,0},{nblocks,3,smsa}});
         	reader.Get<double>(in_vfs, fs);
         }
 
@@ -681,27 +690,27 @@ int work(std::string &casename)
 
         // Serialize blocks into one 2D array where
         // all data per particle is in one record ('t' is for 'table')
-        size_t nSolventMoleculesLocal = sum_sizes(nwmn);
+        const size_t nSolventMoleculesLocal = sum_sizes(nwmn);
 
         std::vector<int64_t> tiw =
-            make_table(true, in_viw, iw, nSolventMoleculesLocal, 1, 1);
+            make_table(true, in_viw, iw, nblocks, mwm, nSolventMoleculesLocal, nwmn, 1, 1);
         std::vector<double> txw =
-            make_table(lxw, vxw, xw, nSolventMoleculesLocal, 3, nwa);
+            make_table(lxw, vxw, xw, nblocks, mwm, nSolventMoleculesLocal, nwmn, 3, nwa);
         std::vector<double> tvw =
-            make_table(lvw, vvw, vw, nSolventMoleculesLocal, 3, nwa);
+            make_table(lvw, vvw, vw, nblocks, mwm, nSolventMoleculesLocal, nwmn, 3, nwa);
         std::vector<double> tfw =
-            make_table(lfw, vfw, fw, nSolventMoleculesLocal, 3, nwa);
+            make_table(lfw, vfw, fw, nblocks, mwm, nSolventMoleculesLocal, nwmn, 3, nwa);
 
-        size_t nSoluteAtomsLocal = sum_sizes(nsan);
+        const size_t nSoluteAtomsLocal = sum_sizes(nsan);
 
         std::vector<int64_t> tis =
-            make_table(true, in_vis, is, nSoluteAtomsLocal, 1, 1);
+            make_table(true, in_vis, is, nblocks, msa, nSoluteAtomsLocal, nsan, 1, 1);
         std::vector<double> txs =
-            make_table(lxs, vxs, xs, nSoluteAtomsLocal, 3, 1);
+            make_table(lxs, vxs, xs, nblocks, msa, nSoluteAtomsLocal, nsan, 3, 1);
         std::vector<double> tvs =
-            make_table(lvs, vvs, vs, nSoluteAtomsLocal, 3, 1);
+            make_table(lvs, vvs, vs, nblocks, msa, nSoluteAtomsLocal, nsan, 3, 1);
         std::vector<double> tfs =
-            make_table(lfs, vfs, fs, nSoluteAtomsLocal, 3, 1);
+            make_table(lfs, vfs, fs, nblocks, msa, nSoluteAtomsLocal, nsan, 3, 1);
 
         dbgCheckZeros(lxw, vxw, txw, tiw, 3 * nwa, rank);
         dbgCheckZeros(lxs, vxs, txs, tis, 3, rank);
