@@ -124,11 +124,10 @@ bool epsilon(int64_t d) { return (d == 0); }
 
 /* Gather one array on 'root' process  */
 template <class T>
-void dbgCheckZeros(bool flag, adios2::Variable<T> &v,
-                   std::vector<T> &mydata, std::vector<int64_t> &myindex,
-                   int recordsize, int root)
+void dbgCheckZeros(bool flag, adios2::Variable<T> &v, std::vector<T> &mydata,
+                   std::vector<int64_t> &myindex, int recordsize, int root)
 {
-    int firstZeroPos=-1;
+    int firstZeroPos = -1;
     if (root == rank)
     {
         const size_t nMyElems = myindex.size() * recordsize;
@@ -146,7 +145,7 @@ void dbgCheckZeros(bool flag, adios2::Variable<T> &v,
             }
         }
         std::cout << "-- Rank " << rank << " var " << v.Name() << " data has "
-                << nMyElems << " elements and " << nZeros << " zeros ";
+                  << nMyElems << " elements and " << nZeros << " zeros ";
         if (firstZeroPos >= 0)
         {
             std::cout << "starting at pos " << firstZeroPos;
@@ -364,7 +363,7 @@ int work(std::string &casename)
     adios2::Variable<double> vstime, vpres, vtemp, vvlat;
 
     // adios2 io object and engine init
-    adios2::ADIOS ad("adios2.xml", comm, adios2::DebugON);
+    adios2::ADIOS ad("adios2.xml", comm);
 
     // IO objects for reading and writing
     adios2::IO reader_io = ad.DeclareIO("trj");
@@ -584,12 +583,10 @@ int work(std::string &casename)
                       << " select ID " << startBlockID_solvent + i << std::endl;
             in_viw.SetBlockSelection(startBlockID_solvent + i);
             reader.Get<int64_t>(in_viw, iw[i]);
-            std::cout << "Rank " << rank << " block " << i
-                      << " solvent/indices"
+            std::cout << "Rank " << rank << " block " << i << " solvent/indices"
                       << " shape = " << printDims(in_viw.Shape())
                       << " dims = " << printDims(in_viw.Count())
-                      << " offset = " << printDims(in_viw.Start())
-                      << std::endl;
+                      << " offset = " << printDims(in_viw.Start()) << std::endl;
             if (lxw)
             {
                 in_vxw.SetBlockSelection(startBlockID_solvent + i);

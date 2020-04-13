@@ -1,6 +1,7 @@
 /*
- * Trajectory test streaming code for imitating NWCHEM with unsorted ADIOS2 trajectory data
- * Reads <CASENAME>_trj_nwchem.bp and writes <CASENAME>_trj_dump.bp
+ * Trajectory test streaming code for imitating NWCHEM with unsorted ADIOS2
+ * trajectory data Reads <CASENAME>_trj_nwchem.bp and writes
+ * <CASENAME>_trj_dump.bp
  *
  * Norbert Podhorszki, pnorbert@ornl.gov
  *
@@ -49,17 +50,15 @@ std::string printDims(const adios2::Dims &dims)
     return oss.str();
 }
 
-
 bool epsilon(double d) { return (fabs(d) < 1.0e-20); }
 bool epsilon(int64_t d) { return (d == 0); }
 
 /* Gather one array on 'root' process  */
 template <class T>
-void dbgCheckZeros(bool flag, adios2::Variable<T> &v,
-                   std::vector<T> &mydata, std::vector<int64_t> &myindex,
-                   int recordsize, int root)
+void dbgCheckZeros(bool flag, adios2::Variable<T> &v, std::vector<T> &mydata,
+                   std::vector<int64_t> &myindex, int recordsize, int root)
 {
-    int firstZeroPos=-1;
+    int firstZeroPos = -1;
     if (root == rank)
     {
         const size_t nMyElems = myindex.size() * recordsize;
@@ -77,7 +76,7 @@ void dbgCheckZeros(bool flag, adios2::Variable<T> &v,
             }
         }
         std::cout << "-- Rank " << rank << " var " << v.Name() << " data has "
-                << nMyElems << " elements and " << nZeros << " zeros ";
+                  << nMyElems << " elements and " << nZeros << " zeros ";
         if (firstZeroPos >= 0)
         {
             std::cout << "starting at pos " << firstZeroPos;
@@ -179,7 +178,7 @@ int work(std::string &casename)
     adios2::Variable<int8_t> vflags;
 
     // adios2 io object and engine init
-    adios2::ADIOS ad("adios2.xml", comm, adios2::DebugON);
+    adios2::ADIOS ad("adios2.xml", comm);
 
     // IO objects for reading and writing
     adios2::IO reader_io = ad.DeclareIO("testStreamInput");
@@ -200,8 +199,7 @@ int work(std::string &casename)
     adios2::Engine reader =
         reader_io.Open(in_filename, adios2::Mode::Read, comm);
     adios2::Engine writer;
-        writer =
-            writer_io.Open(out_filename, adios2::Mode::Write, comm);
+    writer = writer_io.Open(out_filename, adios2::Mode::Write, comm);
 
     // read data per timestep
     int stepStream = 0;
@@ -250,27 +248,29 @@ int work(std::string &casename)
             size_t srank = static_cast<size_t>(rank);
             size_t snwm = static_cast<size_t>(nwm);
             size_t snwa = static_cast<size_t>(nwa);
-            viw = writer_io.DefineVariable<int64_t>("solvent/indices", {}, {},
-            		                               {adios2::UnknownDim}, false);
-            vxw = writer_io.DefineVariable<double>("solvent/coords", {}, {},
-            		                               {3, snwa, adios2::UnknownDim}, false);
-            vvw = writer_io.DefineVariable<double>("solvent/velocity", {}, {},
-                                                   {3, snwa, adios2::UnknownDim});
-            vfw = writer_io.DefineVariable<double>("solvent/forces", {}, {},
-                                                   {3, snwa, adios2::UnknownDim});
+            viw = writer_io.DefineVariable<int64_t>(
+                "solvent/indices", {}, {}, {adios2::UnknownDim}, false);
+            vxw = writer_io.DefineVariable<double>(
+                "solvent/coords", {}, {}, {3, snwa, adios2::UnknownDim}, false);
+            vvw = writer_io.DefineVariable<double>(
+                "solvent/velocity", {}, {}, {3, snwa, adios2::UnknownDim});
+            vfw = writer_io.DefineVariable<double>(
+                "solvent/forces", {}, {}, {3, snwa, adios2::UnknownDim});
 
             size_t snsa = static_cast<size_t>(nsa);
-            vis = writer_io.DefineVariable<int64_t>("solute/indices", {}, {},
-            		                               {adios2::UnknownDim}, false);
-            vxs = writer_io.DefineVariable<double>("solute/coords", {}, {},
-                                                   {3, adios2::UnknownDim}, false);
+            vis = writer_io.DefineVariable<int64_t>(
+                "solute/indices", {}, {}, {adios2::UnknownDim}, false);
+            vxs = writer_io.DefineVariable<double>(
+                "solute/coords", {}, {}, {3, adios2::UnknownDim}, false);
             vvs = writer_io.DefineVariable<double>("solute/velocity", {}, {},
                                                    {3, adios2::UnknownDim});
             vfs = writer_io.DefineVariable<double>("solute/forces", {}, {},
                                                    {3, adios2::UnknownDim});
 
-            vnwmn = writer_io.DefineVariable<int64_t>("solvent/nwmn", {snwriters}, {srank}, {1});
-            vnsan = writer_io.DefineVariable<int64_t>("solute/nsan", {snwriters}, {srank}, {1});
+            vnwmn = writer_io.DefineVariable<int64_t>(
+                "solvent/nwmn", {snwriters}, {srank}, {1});
+            vnsan = writer_io.DefineVariable<int64_t>(
+                "solute/nsan", {snwriters}, {srank}, {1});
 
             if (!rank)
             {
@@ -282,7 +282,6 @@ int work(std::string &casename)
                 vrdate = writer_io.DefineVariable<std::string>("rdate");
                 vrtime = writer_io.DefineVariable<std::string>("rtime");
                 vnproc = writer_io.DefineVariable<int64_t>("nproc");
-
 
                 vstime = writer_io.DefineVariable<double>("stime");
                 vpres = writer_io.DefineVariable<double>("pres");
@@ -406,12 +405,10 @@ int work(std::string &casename)
                       << " select ID " << startBlockID_solvent + i << std::endl;
             in_viw.SetBlockSelection(startBlockID_solvent + i);
             reader.Get<int64_t>(in_viw, iw[i]);
-            std::cout << "Rank " << rank << " block " << i
-                      << " solvent/indices"
+            std::cout << "Rank " << rank << " block " << i << " solvent/indices"
                       << " shape = " << printDims(in_viw.Shape())
                       << " dims = " << printDims(in_viw.Count())
-                      << " offset = " << printDims(in_viw.Start())
-                      << std::endl;
+                      << " offset = " << printDims(in_viw.Start()) << std::endl;
             if (lxw)
             {
                 in_vxw.SetBlockSelection(startBlockID_solvent + i);
@@ -483,81 +480,82 @@ int work(std::string &casename)
         // End adios2 step for reading
         reader.EndStep();
 
-
         // Write out result
 
         writer.BeginStep();
 
         if (!rank)
         {
-        	if (firstStep)
-        	{
-        		writer.Put<int64_t>(vnwm, nwm);
-        		writer.Put<int64_t>(vnwa, nwa);
-        		writer.Put<int64_t>(vnsa, nsa);
-        		writer.Put<int64_t>(vnproc, nwriters);
-        		writer.Put<std::string>(vrdate, rdate);
-        	}
-        	writer.Put<double>(vstime, stime);
-        	writer.Put<double>(vpres, pres);
-        	writer.Put<double>(vtemp, temp);
-        	writer.Put<std::string>(vrtime, rtime);
-        	writer.Put<double>(vvlat, vlat.data());
-        	int8_t f = in_vflags.Min();
-        	writer.Put<int8_t>(vflags, f);
+            if (firstStep)
+            {
+                writer.Put<int64_t>(vnwm, nwm);
+                writer.Put<int64_t>(vnwa, nwa);
+                writer.Put<int64_t>(vnsa, nsa);
+                writer.Put<int64_t>(vnproc, nwriters);
+                writer.Put<std::string>(vrdate, rdate);
+            }
+            writer.Put<double>(vstime, stime);
+            writer.Put<double>(vpres, pres);
+            writer.Put<double>(vtemp, temp);
+            writer.Put<std::string>(vrtime, rtime);
+            writer.Put<double>(vvlat, vlat.data());
+            int8_t f = in_vflags.Min();
+            writer.Put<int8_t>(vflags, f);
         }
 
         for (size_t i = 0; i < nblocks_solvent; ++i)
         {
-            vnwmn.SetSelection({{startBlockID_solvent + i},{1}});
-        	writer.Put<int64_t>(vnwmn, nwmn[startBlockID_solvent + i], adios2::Mode::Sync);
+            vnwmn.SetSelection({{startBlockID_solvent + i}, {1}});
+            writer.Put<int64_t>(vnwmn, nwmn[startBlockID_solvent + i],
+                                adios2::Mode::Sync);
 
             in_viw.SetBlockSelection(startBlockID_solvent + i);
             size_t snwm = in_viw.Count()[0];
             size_t snwa = static_cast<size_t>(nwa);
-        	viw.SetSelection({{},{snwm}});
-        	writer.Put<int64_t>(viw, iw[i].data(), adios2::Mode::Sync);
+            viw.SetSelection({{}, {snwm}});
+            writer.Put<int64_t>(viw, iw[i].data(), adios2::Mode::Sync);
             if (lxw)
             {
 
-            	vxw.SetSelection({{},{3,snwa,snwm}});
-            	writer.Put<double>(vxw, xw[i].data(), adios2::Mode::Sync);
+                vxw.SetSelection({{}, {3, snwa, snwm}});
+                writer.Put<double>(vxw, xw[i].data(), adios2::Mode::Sync);
             }
             if (lvw)
             {
-            	vvw.SetSelection({{},{3,snwa,snwm}});
-            	writer.Put<double>(vvw, vw[i].data());
+                vvw.SetSelection({{}, {3, snwa, snwm}});
+                writer.Put<double>(vvw, vw[i].data());
             }
             if (lfw)
             {
-            	vfw.SetSelection({{},{3,snwa,snwm}});
-            	writer.Put<double>(vfw, fw[i].data());
+                vfw.SetSelection({{}, {3, snwa, snwm}});
+                writer.Put<double>(vfw, fw[i].data());
             }
         }
         for (size_t i = 0; i < nblocks_solute; ++i)
         {
-            vnsan.SetSelection({{startBlockID_solute + i},{1}});
-        	writer.Put<int64_t>(vnsan, nsan[startBlockID_solute + i], adios2::Mode::Sync);
+            vnsan.SetSelection({{startBlockID_solute + i}, {1}});
+            writer.Put<int64_t>(vnsan, nsan[startBlockID_solute + i],
+                                adios2::Mode::Sync);
 
             in_vis.SetBlockSelection(startBlockID_solute + i);
             size_t snas = in_vis.Count()[0];
-        	vis.SetSelection({{},{snas}});
-        	writer.Put<int64_t>(vis, is[i].data(), adios2::Mode::Sync);
+            vis.SetSelection({{}, {snas}});
+            writer.Put<int64_t>(vis, is[i].data(), adios2::Mode::Sync);
             if (lxs)
-             {
-            	vxs.SetSelection({{},{3,snas}});
-             	writer.Put<double>(vxs, xs[i].data());
-             }
-             if (lvs)
-             {
-             	vvs.SetSelection({{},{3,snas}});
-             	writer.Put<double>(vvs, vs[i].data());
-             }
-             if (lfs)
-             {
-             	vfs.SetSelection({{},{3,snas}});
-             	writer.Put<double>(vfs, fs[i].data());
-             }
+            {
+                vxs.SetSelection({{}, {3, snas}});
+                writer.Put<double>(vxs, xs[i].data());
+            }
+            if (lvs)
+            {
+                vvs.SetSelection({{}, {3, snas}});
+                writer.Put<double>(vvs, vs[i].data());
+            }
+            if (lfs)
+            {
+                vfs.SetSelection({{}, {3, snas}});
+                writer.Put<double>(vfs, fs[i].data());
+            }
         }
         writer.EndStep();
         ++stepStream;
