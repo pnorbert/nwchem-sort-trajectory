@@ -7,11 +7,14 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <assert.h>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <inttypes.h>
+#include <iomanip>
 #include <iostream>
 #include <numeric> //std::accumulate
 #include <sstream> // std::ostringstream
@@ -24,6 +27,12 @@
 MPI_Comm comm;
 int rank, comm_size;
 int verbose = 0;
+
+typedef std::chrono::duration<double> Seconds;
+typedef std::chrono::time_point<
+    std::chrono::steady_clock,
+    std::chrono::duration<double, std::chrono::steady_clock::period>>
+    TimePoint;
 
 size_t sum_sizes(std::vector<int64_t> &array)
 {
@@ -45,6 +54,45 @@ std::string printDims(const adios2::Dims &dims)
     }
     oss << "}";
     return oss.str();
+}
+
+void ReportProfile(std::string &casename, const Seconds &timeTotal,
+                   const Seconds &timeWait, const Seconds &timeRead,
+                   const Seconds &timeGather, const Seconds &timeSort,
+                   const Seconds &timeWrite)
+{
+    double p1[6] = {timeTotal.count(),  timeWait.count(), timeRead.count(),
+                    timeGather.count(), timeSort.count(), timeWrite.count()};
+    if (!rank)
+    {
+        double p[6 * comm_size];
+        MPI_Gather(p1, 6, MPI_DOUBLE, p, 6, MPI_DOUBLE, 0, comm);
+
+        std::ofstream of;
+        of.open(casename + "_sort.profile");
+        of << "Sorter time profile for case " << casename << "\n";
+        of << "Loop total    Wait on read  Read          Gather        Sort    "
+              "      Write\n";
+        for (int i = 0; i < comm_size; ++i)
+        {
+            for (int j = 0; j < 6; ++j)
+            {
+                of << std::fixed << std::setprecision(6) << std::setw(12)
+                   << p[i * 6 + j] << "  ";
+            }
+            of << "\n";
+        }
+        of.close();
+        if (verbose)
+        {
+            std::cout << "Profile written to " << casename << "_sort.profile"
+                      << std::endl;
+        }
+    }
+    else
+    {
+        MPI_Gather(p1, 6, MPI_DOUBLE, NULL, 0, MPI_DOUBLE, 0, comm);
+    }
 }
 
 /* Serialize all data blocks into a table
@@ -398,6 +446,14 @@ int work(std::string &casename)
     adios2::Variable<std::string> vrdate, vrtime;
     adios2::Variable<double> vstime, vpres, vtemp, vvlat;
 
+    Seconds timeTotal = Seconds(0.0);
+    Seconds timeWait = Seconds(0.0);
+    Seconds timeRead = Seconds(0.0);
+    Seconds timeGather = Seconds(0.0);
+    Seconds timeSort = Seconds(0.0);
+    Seconds timeWrite = Seconds(0.0);
+    TimePoint ts, te;
+
     // adios2 io object and engine init
     adios2::ADIOS ad("adios2.xml", comm);
 
@@ -427,17 +483,23 @@ int work(std::string &casename)
     }
 
     // read data per timestep
+    const auto tTotalStart = std::chrono::steady_clock::now();
     int stepSorting = 0;
     while (true)
     {
-
+        ts = std::chrono::steady_clock::now();
         // Begin step
         adios2::StepStatus read_status =
             reader.BeginStep(adios2::StepMode::Read, 10.0f);
+        te = std::chrono::steady_clock::now();
+        timeWait += te - ts;
         if (read_status == adios2::StepStatus::NotReady)
         {
             // std::cout << "Stream not ready yet. Waiting...\n";
+            ts = std::chrono::steady_clock::now();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            te = std::chrono::steady_clock::now();
+            timeWait += te - ts;
             continue;
         }
         else if (read_status != adios2::StepStatus::OK)
@@ -445,6 +507,7 @@ int work(std::string &casename)
             break;
         }
 
+        ts = std::chrono::steady_clock::now();
         int stepSimOut = reader.CurrentStep();
 
         // Inquire variable and set the selection at the first step only
@@ -688,6 +751,11 @@ int work(std::string &casename)
         // End adios2 step for reading
         reader.EndStep();
 
+        te = std::chrono::steady_clock::now();
+        timeRead += te - ts;
+
+        ts = std::chrono::steady_clock::now();
+
         // NOTE: Input data is in memory at this point but not before
         /*for (size_t i = 0; i < nblocks_solvent; ++i)
         {
@@ -747,6 +815,10 @@ int work(std::string &casename)
         dbgCheckZeros(lxw, vxw, txw, tiw, 3 * nwa, rank);
         dbgCheckZeros(lxs, vxs, txs, tis, 3, rank);
 
+        te = std::chrono::steady_clock::now();
+        timeSort += te - ts;
+        ts = std::chrono::steady_clock::now();
+
         // Collect each array on various ranks and sort there
         std::pair<std::vector<double>, std::vector<int64_t>> gxwi =
             gather_array(lxw, vxw, txw, tiw, nwa * 3, 0);
@@ -761,6 +833,10 @@ int work(std::string &casename)
         std::pair<std::vector<double>, std::vector<int64_t>> gfsi =
             gather_array(lfs, vfs, tfs, tis, 3, 0);
 
+        te = std::chrono::steady_clock::now();
+        timeGather += te - ts;
+        ts = std::chrono::steady_clock::now();
+
         // Sort particles
         // Write out result
 
@@ -769,12 +845,20 @@ int work(std::string &casename)
             writer.BeginStep();
         }
 
+        te = std::chrono::steady_clock::now();
+        timeWrite += te - ts;
+        ts = std::chrono::steady_clock::now();
+
         sort_and_write_array(lxw, vxw, writer, gxwi, nwa * 3, 0);
         sort_and_write_array(lvw, vvw, writer, gvwi, nwa * 3, 0);
         sort_and_write_array(lfw, vfw, writer, gfwi, nwa * 3, 0);
         sort_and_write_array(lxs, vxs, writer, gxsi, 3, 0);
         sort_and_write_array(lvs, vvs, writer, gvsi, 3, 0);
         sort_and_write_array(lfs, vfs, writer, gfsi, 3, 0);
+
+        te = std::chrono::steady_clock::now();
+        timeSort += te - ts;
+        ts = std::chrono::steady_clock::now();
 
         if (!rank)
         {
@@ -798,7 +882,15 @@ int work(std::string &casename)
         }
         ++stepSorting;
         firstStep = false;
+
+        MPI_Barrier(comm);
+        te = std::chrono::steady_clock::now();
+        timeWrite += te - ts;
+        ts = std::chrono::steady_clock::now();
     }
+
+    const auto tTotalEnd = std::chrono::steady_clock::now();
+    timeTotal = tTotalEnd - tTotalStart;
 
     // cleanup
     reader.Close();
@@ -806,6 +898,10 @@ int work(std::string &casename)
     {
         writer.Close();
     }
+
+    ReportProfile(casename, timeTotal, timeWait, timeRead, timeGather, timeSort,
+                  timeWrite);
+
     return 0;
 }
 
