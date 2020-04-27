@@ -23,6 +23,7 @@
 
 MPI_Comm comm;
 int rank, comm_size;
+int verbose = 0;
 
 size_t sum_sizes(std::vector<int64_t> &array)
 {
@@ -83,15 +84,18 @@ std::vector<T> make_table(bool flag, adios2::Variable<T> &v,
             ns[j] = j * blocksize;
         }
 
-        std::cout << "-- Rank " << rank << " copy " << nblocks
-                  << " blocks to var " << v.Name()
-                  << " table nrows = " << nelemsTotal
-                  << " recordsize = " << recordsize << " ns = [";
-        for (int j = 0; j < recordsize; ++j)
+        if (verbose >= 3)
         {
-            std::cout << ns[j] << " ";
+            std::cout << "-- Rank " << rank << " copy " << nblocks
+                      << " blocks to var " << v.Name()
+                      << " table nrows = " << nelemsTotal
+                      << " recordsize = " << recordsize << " ns = [";
+            for (int j = 0; j < recordsize; ++j)
+            {
+                std::cout << ns[j] << " ";
+            }
+            std::cout << "]" << std::endl;
         }
-        std::cout << "]" << std::endl;
 
         size_t arrayStartPos = 0;
         size_t currentIdx = 0;
@@ -154,13 +158,17 @@ void dbgCheckZeros(bool flag, adios2::Variable<T> &v, std::vector<T> &mydata,
                 }
             }
         }
-        std::cout << "-- Rank " << rank << " var " << v.Name() << " data has "
-                  << nMyElems << " elements and " << nZeros << " zeros ";
-        if (firstZeroPos >= 0)
+        if (verbose >= 3)
         {
-            std::cout << "starting at pos " << firstZeroPos;
+            std::cout << "-- Rank " << rank << " var " << v.Name()
+                      << " data has " << nMyElems << " elements and " << nZeros
+                      << " zeros ";
+            if (firstZeroPos >= 0)
+            {
+                std::cout << "starting at pos " << firstZeroPos;
+            }
+            std::cout << std::endl;
         }
-        std::cout << std::endl;
     }
 }
 
@@ -199,24 +207,31 @@ gather_array(bool flag, adios2::Variable<double> &v,
             alldata.resize(static_cast<size_t>(nTotal * recordsize));
             allindex.resize(static_cast<size_t>(nTotal));
 
-            std::cout << "-- Rank " << rank << " gathers data and indices of "
-                      << nTotal << " elements, recordsize = " << recordsize
-                      << std::endl;
+            if (verbose >= 3)
+            {
+                std::cout << "-- Rank " << rank
+                          << " gathers data and indices of " << nTotal
+                          << " elements, recordsize = " << recordsize
+                          << std::endl;
+            }
         }
 
-        std::cout << "-- Rank " << rank << " receiveCountIdx = [";
-        for (int i = 0; i < comm_size; ++i)
+        if (verbose >= 3)
         {
-            std::cout << " " << recvCountIdx[i];
-        }
-        std::cout << "] " << std::endl;
+            std::cout << "-- Rank " << rank << " receiveCountIdx = [";
+            for (int i = 0; i < comm_size; ++i)
+            {
+                std::cout << " " << recvCountIdx[i];
+            }
+            std::cout << "] " << std::endl;
 
-        std::cout << "-- Rank " << rank << " recvCountData = [";
-        for (int i = 0; i < comm_size; ++i)
-        {
-            std::cout << " " << recvCountData[i];
+            std::cout << "-- Rank " << rank << " recvCountData = [";
+            for (int i = 0; i < comm_size; ++i)
+            {
+                std::cout << " " << recvCountData[i];
+            }
+            std::cout << "] " << std::endl;
         }
-        std::cout << "] " << std::endl;
 
         MPI_Gatherv(mydata.data(), iElems * recordsize, MPI_DOUBLE,
                     alldata.data(), recvCountData, displData, MPI_DOUBLE, root,
@@ -246,8 +261,11 @@ void sort_and_write_array(
         sorted.resize(n * recordsize);
         assert(sorted.size() == array.size());
 
-        std::cout << "Rank " << rank << " sort " << v.Name() << " " << n
-                  << " elements" << std::endl;
+        if (verbose >= 3)
+        {
+            std::cout << "Rank " << rank << " sort " << v.Name() << " " << n
+                      << " elements" << std::endl;
+        }
 
 #if 1
         // Note: indices run 1..N fortran style, here we calculate with 0..N-1
@@ -287,10 +305,11 @@ void sort_and_write_array(
  */
 void printUsage()
 {
-    std::cout << "Usage: nwchem-sort-trajectory CASENAME\n"
+    std::cout << "Usage: nwchem-sort-trajectory CASENAME  N \n"
               << "  CASENAME:  Name of the nwchem run name\n"
               << "    This tool reads <CASENAME>_trj_dump.bp\n"
-              << "    and it writes   <CASENAME>_trj.bp\n\n";
+              << "    and it writes   <CASENAME>_trj.bp\n"
+              << "  N:         Verbose value, N = 0-3\n\n";
 }
 
 int work(std::string &casename)
@@ -387,7 +406,7 @@ int work(std::string &casename)
     // We use the IO and Variable definitions on all processes but only
     // rank 0 will use it for writing output
     adios2::IO writer_io = ad.DeclareIO("SortingOutput");
-    if (!rank)
+    if (!rank && verbose)
     {
         std::cout << "Sorter reads " << in_filename
                   << " using engine type: " << reader_io.EngineType()
@@ -510,11 +529,14 @@ int work(std::string &casename)
                 startBlockID += extras;
             }
 
-            std::cout << "Rank " << rank << " reads " << nblocks
-                      << " blocks from block idx " << startBlockID
-                      << " from total " << nwriters << " writers. Reads "
-                      << nblocks * mwm << " solvent records and reads "
-                      << nblocks * msa << " solute records " << std::endl;
+            if (verbose >= 2)
+            {
+                std::cout << "Rank " << rank << " reads " << nblocks
+                          << " blocks from block idx " << startBlockID
+                          << " from total " << nwriters << " writers. Reads "
+                          << nblocks * mwm << " solvent records and reads "
+                          << nblocks * msa << " solute records " << std::endl;
+            }
 
             iw.resize(nblocks * mwm);
             xw.resize(nblocks * nwa * 3 * mwm);
@@ -543,8 +565,11 @@ int work(std::string &casename)
             flags = flags >> 1;
             lxw = (flags % 2 == 1);
             flags = flags >> 1;
-            std::cout << "Rank " << rank << " flags :" << lxw << lvw << lfw
-                      << lxs << lvs << lfs << std::endl;
+            if (verbose >= 2)
+            {
+                std::cout << "Rank " << rank << " flags :" << lxw << lvw << lfw
+                          << lxs << lvs << lfs << std::endl;
+            }
         }
 
         // Read trajectory data and indices
@@ -569,23 +594,34 @@ int work(std::string &casename)
 
         /* Read solvent data, 'nblocks' complete consecutive blocks (from
          * nblocks writers) */
-        std::cout << "Rank " << rank << " reads solvent blocks " << startBlockID
-                  << ".." << startBlockID + nblocks - 1 << std::endl;
+        if (verbose >= 2)
+        {
+            std::cout << "Rank " << rank << " reads solvent blocks "
+                      << startBlockID << ".." << startBlockID + nblocks - 1
+                      << std::endl;
+        }
         in_viw.SetSelection({{startBlockID, 0}, {nblocks, smwm}});
         reader.Get<int64_t>(in_viw, iw);
-        std::cout << "Rank " << rank << " reads solvent/indices"
-                  << " shape = " << printDims(in_viw.Shape())
-                  << " dims = " << printDims(in_viw.Count())
-                  << " offset = " << printDims(in_viw.Start()) << std::endl;
+        if (verbose >= 2)
+        {
+            std::cout << "Rank " << rank << " reads solvent/indices"
+                      << " shape = " << printDims(in_viw.Shape())
+                      << " dims = " << printDims(in_viw.Count())
+                      << " offset = " << printDims(in_viw.Start()) << std::endl;
+        }
         if (lxw)
         {
             in_vxw.SetSelection(
                 {{startBlockID, 0, 0, 0}, {nblocks, snwa, 3, smwm}});
             reader.Get<double>("solvent/coords", xw);
-            std::cout << "Rank " << rank << " reads solvent/coords "
-                      << " shape = " << printDims(in_vxw.Shape())
-                      << " dims = " << printDims(in_vxw.Count())
-                      << " offset = " << printDims(in_vxw.Start()) << std::endl;
+            if (verbose >= 2)
+            {
+                std::cout << "Rank " << rank << " reads solvent/coords "
+                          << " shape = " << printDims(in_vxw.Shape())
+                          << " dims = " << printDims(in_vxw.Count())
+                          << " offset = " << printDims(in_vxw.Start())
+                          << std::endl;
+            }
         }
         if (lvw)
         {
@@ -602,8 +638,12 @@ int work(std::string &casename)
 
         const size_t smsa = static_cast<size_t>(msa);
 
-        std::cout << "Rank " << rank << " reads solute blocks " << startBlockID
-                  << ".." << startBlockID + nblocks - 1 << std::endl;
+        if (verbose >= 2)
+        {
+            std::cout << "Rank " << rank << " reads solute blocks "
+                      << startBlockID << ".." << startBlockID + nblocks - 1
+                      << std::endl;
+        }
         in_vis.SetSelection({{startBlockID, 0}, {nblocks, smsa}});
         reader.Get<int64_t>(in_vis, is);
         if (lxs)
@@ -673,7 +713,7 @@ int work(std::string &casename)
         }*/
         // std::cout << "Rank " << rank << " Done assert " << std::endl;
 
-        if (!rank)
+        if (!rank && verbose)
         {
             std::cout << "Sorting step " << stepSorting
                       << " processing NWCHEM output step " << stepSimOut
@@ -769,6 +809,20 @@ int work(std::string &casename)
     return 0;
 }
 
+int StringToInt(const std::string &input, const std::string &hint)
+{
+    try
+    {
+        const int out = std::stoi(input);
+        return out;
+    }
+    catch (...)
+    {
+        std::throw_with_nested(std::invalid_argument(
+            "ERROR: could not cast " + input + " to int " + hint));
+    }
+}
+
 /*
  * MAIN
  */
@@ -804,6 +858,10 @@ int main(int argc, char *argv[])
     else
     {
         std::string casename(argv[1]);
+        if (argc > 2)
+        {
+            verbose = StringToInt(argv[2], " parsing argument 2");
+        }
         work(casename);
     }
     MPI_Barrier(comm);
