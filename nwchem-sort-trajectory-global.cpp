@@ -57,28 +57,32 @@ std::string printDims(const adios2::Dims &dims)
 }
 
 void ReportProfile(std::string &casename, const Seconds &timeTotal,
-                   const Seconds &timeWait, const Seconds &timeRead,
-                   const Seconds &timeGather, const Seconds &timeSort,
-                   const Seconds &timeWrite)
+                   const Seconds &timeOpen, const Seconds &timeWait,
+                   const Seconds &timeRead, const Seconds &timeGather,
+                   const Seconds &timeSort, const Seconds &timeWrite)
 {
-    double p1[6] = {timeTotal.count(),  timeWait.count(), timeRead.count(),
-                    timeGather.count(), timeSort.count(), timeWrite.count()};
+    static const int nTimers = 7;
+    double p1[nTimers] = {timeTotal.count(),  timeOpen.count(),
+                          timeWait.count(),   timeRead.count(),
+                          timeGather.count(), timeSort.count(),
+                          timeWrite.count()};
     if (!rank)
     {
-        double p[6 * comm_size];
-        MPI_Gather(p1, 6, MPI_DOUBLE, p, 6, MPI_DOUBLE, 0, comm);
+        double p[nTimers * comm_size];
+        MPI_Gather(p1, nTimers, MPI_DOUBLE, p, nTimers, MPI_DOUBLE, 0, comm);
 
         std::ofstream of;
         of.open(casename + "_sort.profile");
         of << "Sorter time profile for case " << casename << "\n";
-        of << "Loop total    Wait on read  Read          Gather        Sort    "
+        of << "Loop total    Open          Wait on read  Read          Gather  "
+              "      Sort    "
               "      Write\n";
         for (int i = 0; i < comm_size; ++i)
         {
-            for (int j = 0; j < 6; ++j)
+            for (int j = 0; j < nTimers; ++j)
             {
                 of << std::fixed << std::setprecision(6) << std::setw(12)
-                   << p[i * 6 + j] << "  ";
+                   << p[i * nTimers + j] << "  ";
             }
             of << "\n";
         }
@@ -91,7 +95,7 @@ void ReportProfile(std::string &casename, const Seconds &timeTotal,
     }
     else
     {
-        MPI_Gather(p1, 6, MPI_DOUBLE, NULL, 0, MPI_DOUBLE, 0, comm);
+        MPI_Gather(p1, nTimers, MPI_DOUBLE, NULL, 0, MPI_DOUBLE, 0, comm);
     }
 }
 
@@ -447,6 +451,7 @@ int work(std::string &casename)
     adios2::Variable<double> vstime, vpres, vtemp, vvlat;
 
     Seconds timeTotal = Seconds(0.0);
+    Seconds timeOpen = Seconds(0.0);
     Seconds timeWait = Seconds(0.0);
     Seconds timeRead = Seconds(0.0);
     Seconds timeGather = Seconds(0.0);
@@ -472,7 +477,10 @@ int work(std::string &casename)
                   << std::endl;
     }
 
+    const auto tTotalStart = std::chrono::steady_clock::now();
+
     // Engines for reading and writing
+    ts = std::chrono::steady_clock::now();
     adios2::Engine reader =
         reader_io.Open(in_filename, adios2::Mode::Read, comm);
     adios2::Engine writer;
@@ -481,9 +489,10 @@ int work(std::string &casename)
         writer =
             writer_io.Open(out_filename, adios2::Mode::Write, MPI_COMM_SELF);
     }
+    te = std::chrono::steady_clock::now();
+    timeOpen += te - ts;
 
     // read data per timestep
-    const auto tTotalStart = std::chrono::steady_clock::now();
     int stepSorting = 0;
     while (true)
     {
@@ -899,8 +908,8 @@ int work(std::string &casename)
         writer.Close();
     }
 
-    ReportProfile(casename, timeTotal, timeWait, timeRead, timeGather, timeSort,
-                  timeWrite);
+    ReportProfile(casename, timeTotal, timeOpen, timeWait, timeRead, timeGather,
+                  timeSort, timeWrite);
 
     return 0;
 }
